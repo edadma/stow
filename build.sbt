@@ -33,7 +33,7 @@ ThisBuild / developers := List(
 )
 
 ThisBuild / homepage    := Some(url("https://github.com/edadma/stow"))
-ThisBuild / description := "A simple ACID page storage library"
+ThisBuild / description := "Crash-safe atomic durable page storage"
 
 ThisBuild / publishTo := sonatypePublishToBundle.value
 

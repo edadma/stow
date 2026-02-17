@@ -7,7 +7,7 @@
 ![ScalaJS Version](https://img.shields.io/badge/Scala.js-1.20.2-blue.svg)
 ![Scala Native Version](https://img.shields.io/badge/Scala_Native-0.5.10-blue.svg)
 
-A simple ACID page storage library for Scala 3. Manages fixed-size pages in a single file with atomic commits, crash recovery, and no write-ahead log.
+Crash-safe atomic durable page storage for Scala 3. Manages fixed-size pages in a single file with atomic commits, crash recovery, and no write-ahead log.
 
 ## Overview
 
