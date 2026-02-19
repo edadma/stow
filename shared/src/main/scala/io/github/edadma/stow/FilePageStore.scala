@@ -7,6 +7,7 @@ class FilePageStore private (file: RandomAccessFile, private var header: HeaderD
     extends PageStore:
   private val _pageSize = header.pageSize
   private val freeList = ArrayDeque[PageId]()
+  private var activeTransaction: Option[TransactionImpl] = None
 
   // Build in-memory free list by walking the on-disk linked list
   locally {
@@ -26,20 +27,22 @@ class FilePageStore private (file: RandomAccessFile, private var header: HeaderD
     readPage(id)
 
   def modify(fn: WriteBatch => Unit): Unit =
-    // Link pending pages from the previous commit into the free list.
-    // This must happen before the batch runs so the pages are allocatable.
-    linkPendingPages()
-
-    val batch = new WriteBatchImpl
+    require(activeTransaction.isEmpty, "cannot call modify() while a transaction is active")
+    val txn = beginTransaction()
     try
-      fn(batch)
+      fn(txn)
+      txn.commit()
     catch
       case e: Throwable =>
-        // Rollback: return allocated pages to the free list
-        batch.allocated.foreach(freeList.prepend)
+        if txn.isActive then txn.rollback()
         throw e
 
-    commit(batch)
+  def beginTransaction(): Transaction =
+    require(activeTransaction.isEmpty, "a transaction is already active")
+    linkPendingPages()
+    val txn = new TransactionImpl
+    activeTransaction = Some(txn)
+    txn
 
   def close(): Unit = file.close()
 
@@ -194,6 +197,47 @@ class FilePageStore private (file: RandomAccessFile, private var header: HeaderD
 
     def setMetaRoot(id: PageId): Unit =
       newMetaRoot = Some(id)
+
+  private class TransactionImpl extends Transaction:
+    private val batch = new WriteBatchImpl
+    private var _isActive = true
+
+    def isActive: Boolean = _isActive
+
+    private def requireActive(): Unit =
+      require(_isActive, "transaction is no longer active")
+
+    def allocate(): PageId =
+      requireActive()
+      batch.allocate()
+
+    def read(id: PageId): Array[Byte] =
+      requireActive()
+      batch.read(id)
+
+    def write(id: PageId, data: Array[Byte]): Unit =
+      requireActive()
+      batch.write(id, data)
+
+    def free(id: PageId): Unit =
+      requireActive()
+      batch.free(id)
+
+    def setMetaRoot(id: PageId): Unit =
+      requireActive()
+      batch.setMetaRoot(id)
+
+    def commit(): Unit =
+      requireActive()
+      _isActive = false
+      activeTransaction = None
+      FilePageStore.this.commit(batch)
+
+    def rollback(): Unit =
+      requireActive()
+      _isActive = false
+      activeTransaction = None
+      batch.allocated.foreach(freeList.prepend)
 
 object FilePageStore:
   def create(path: String, pageSize: Int): FilePageStore =

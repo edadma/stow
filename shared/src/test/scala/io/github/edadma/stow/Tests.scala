@@ -334,3 +334,144 @@ class PageStoreTests extends AnyFreeSpec with Matchers:
       }
     }
   }
+
+class TransactionTests extends AnyFreeSpec with Matchers:
+
+  def withStore(pageSize: Int = 256)(test: (FilePageStore, String) => Unit): Unit =
+    val path = createTempFile("stow-txn-test", ".db")
+    val store = FilePageStore.create(path, pageSize)
+    try test(store, path)
+    finally
+      try store.close() catch case _: Exception => ()
+      deleteFile(path)
+
+  def fillPage(store: PageStore, value: Byte): Array[Byte] =
+    val data = new Array[Byte](store.pageSize)
+    java.util.Arrays.fill(data, value)
+    data
+
+  "beginTransaction and commit" in withStore() { (store, _) =>
+    var pageId: PageId = NoPage
+    val txn = store.beginTransaction()
+    pageId = txn.allocate()
+    txn.write(pageId, fillPage(store, 0x42))
+    txn.setMetaRoot(pageId)
+    txn.commit()
+
+    store.metaRoot shouldBe pageId
+    store.read(pageId).forall(_ == 0x42) shouldBe true
+  }
+
+  "beginTransaction and rollback" in withStore() { (store, _) =>
+    val originalRoot = store.metaRoot
+
+    val txn = store.beginTransaction()
+    val id = txn.allocate()
+    txn.write(id, fillPage(store, 0xff.toByte))
+    txn.setMetaRoot(id)
+    txn.rollback()
+
+    store.metaRoot shouldBe originalRoot
+  }
+
+  "transaction inactive after commit" in withStore() { (store, _) =>
+    val txn = store.beginTransaction()
+    val id = txn.allocate()
+    txn.write(id, fillPage(store, 0x01))
+    txn.commit()
+
+    txn.isActive shouldBe false
+    assertThrows[IllegalArgumentException] {
+      txn.allocate()
+    }
+  }
+
+  "transaction inactive after rollback" in withStore() { (store, _) =>
+    val txn = store.beginTransaction()
+    txn.rollback()
+
+    txn.isActive shouldBe false
+    assertThrows[IllegalArgumentException] {
+      txn.write(HeaderPages, fillPage(store, 0x01))
+    }
+  }
+
+  "only one active transaction at a time" in withStore() { (store, _) =>
+    val txn = store.beginTransaction()
+    assertThrows[IllegalArgumentException] {
+      store.beginTransaction()
+    }
+    txn.rollback()
+  }
+
+  "cannot call modify during active transaction" in withStore() { (store, _) =>
+    val txn = store.beginTransaction()
+    assertThrows[IllegalArgumentException] {
+      store.modify { _ => () }
+    }
+    txn.rollback()
+  }
+
+  "multi-operation transaction" in withStore() { (store, _) =>
+    var ids = Vector.empty[PageId]
+    val txn = store.beginTransaction()
+    for i <- 0 until 5 do
+      val id = txn.allocate()
+      txn.write(id, fillPage(store, i.toByte))
+      ids = ids :+ id
+    txn.setMetaRoot(ids.head)
+    txn.commit()
+
+    for i <- 0 until 5 do
+      store.read(ids(i)).forall(_ == i.toByte) shouldBe true
+  }
+
+  "read-your-own-writes in transaction" in withStore() { (store, _) =>
+    val txn = store.beginTransaction()
+    val id = txn.allocate()
+    txn.write(id, fillPage(store, 0xab.toByte))
+
+    val readBack = txn.read(id)
+    readBack.forall(_ == 0xab.toByte) shouldBe true
+    txn.commit()
+  }
+
+  "rollback reclaims allocated pages" in withStore() { (store, _) =>
+    val txn1 = store.beginTransaction()
+    val id1 = txn1.allocate()
+    txn1.rollback()
+
+    val txn2 = store.beginTransaction()
+    val id2 = txn2.allocate()
+    txn2.write(id2, fillPage(store, 0x01))
+    txn2.commit()
+
+    id2 shouldBe id1
+  }
+
+  "modify still works" in withStore() { (store, _) =>
+    var pageId: PageId = NoPage
+    store.modify { batch =>
+      pageId = batch.allocate()
+      batch.write(pageId, fillPage(store, 0x77))
+      batch.setMetaRoot(pageId)
+    }
+
+    store.metaRoot shouldBe pageId
+    store.read(pageId).forall(_ == 0x77) shouldBe true
+  }
+
+  "transaction persists across close/open" in withStore() { (store, path) =>
+    var pageId: PageId = NoPage
+    val txn = store.beginTransaction()
+    pageId = txn.allocate()
+    txn.write(pageId, fillPage(store, 0x33))
+    txn.setMetaRoot(pageId)
+    txn.commit()
+    store.close()
+
+    val reopened = FilePageStore.open(path)
+    reopened.metaRoot shouldBe pageId
+    reopened.read(pageId).forall(_ == 0x33) shouldBe true
+    reopened.close()
+  }
