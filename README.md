@@ -24,7 +24,7 @@ Stow provides a low-level foundation for building persistent data structures —
 Add to your `build.sbt`:
 
 ```scala
-libraryDependencies += "io.github.edadma" %%% "stow" % "0.0.1"
+libraryDependencies += "io.github.edadma" %%% "stow" % "0.0.2"
 ```
 
 ## Usage
@@ -71,6 +71,27 @@ store.modify { batch =>
 }
 ```
 
+### Explicit transactions
+
+For grouping multiple operations into a single atomic commit:
+
+```scala
+val txn = store.beginTransaction()
+try
+  val page1 = txn.allocate()
+  txn.write(page1, data1)
+  val page2 = txn.allocate()
+  txn.write(page2, data2)
+  txn.setMetaRoot(page1)
+  txn.commit()
+catch
+  case e: Exception =>
+    if txn.isActive then txn.rollback()
+    throw e
+```
+
+Reads within a transaction see uncommitted writes. Only one transaction can be active at a time.
+
 ### Reopen after crash or restart
 
 ```scala
@@ -87,6 +108,7 @@ trait PageStore:
   def pageSize: Int
   def read(id: PageId): Array[Byte]
   def modify(fn: WriteBatch => Unit): Unit
+  def beginTransaction(): Transaction
   def metaRoot: PageId
   def close(): Unit
 ```
@@ -101,6 +123,17 @@ trait WriteBatch:
   def free(id: PageId): Unit
   def setMetaRoot(id: PageId): Unit
 ```
+
+### Transaction
+
+```scala
+trait Transaction extends WriteBatch:
+  def commit(): Unit
+  def rollback(): Unit
+  def isActive: Boolean
+```
+
+`modify()` is implemented in terms of `beginTransaction`/`commit`/`rollback` internally. Use `modify()` for single-batch operations and `beginTransaction()` when you need explicit control over commit timing.
 
 ## How It Works
 
